@@ -1,0 +1,1301 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Görevimiz : 14 Şubat</title>
+
+<style>
+html,body{
+  margin:0;padding:0;
+  background:black;
+  overflow:hidden;
+  font-family:'Courier New', monospace;
+  width:100%;
+  height:100%;
+}
+canvas{
+  display:block;
+  margin:auto;
+  width:100vw;
+  height:100vh;
+}
+.pixelText{
+  position:absolute;
+  width:100%;
+  text-align:center;
+  color:#9fdcff;
+  font-size:clamp(22px,4vw,40px);
+  text-shadow:0 0 14px #00aaff;
+  pointer-events:none;
+  transition:opacity 1s;
+}
+</style>
+</head>
+
+<body>
+<div id="title" class="pixelText" style="top:18px">GÖREVİMİZ : 14 ŞUBAT</div>
+<canvas id="game"></canvas>
+
+<script>
+/* =========================
+   CANVAS / CONTEXT
+========================= */
+const c=document.getElementById("game");
+const ctx=c.getContext("2d", { alpha:false });
+
+function getViewportSize(){
+  // Mobile address bar / zoom uyumu
+  const vv = window.visualViewport;
+  const w = Math.floor(vv ? vv.width : innerWidth);
+  const h = Math.floor(vv ? vv.height : innerHeight);
+  return { w: Math.max(1,w), h: Math.max(1,h) };
+}
+function resize(){
+  const {w,h}=getViewportSize();
+  c.width=w; c.height=h;
+}
+addEventListener("resize",resize,{passive:true});
+if(window.visualViewport){
+  visualViewport.addEventListener("resize", resize, {passive:true});
+  visualViewport.addEventListener("scroll", resize, {passive:true});
+}
+resize();
+
+/* =========================
+   IMAGES
+========================= */
+const img={},src={
+  bg:"galaxy.png",
+    player:"d1.png",
+    enemy1:"d2.png",
+    enemy2:"d3.png",
+    enemy3:"d4.png",
+    boss:"boss.png"
+};
+for(let k in src){
+  img[k]=new Image();
+  img[k].src=src[k];
+  img[k].loaded=false;
+  img[k].onload=()=>img[k].loaded=true;
+}
+
+/* =========================
+   HELPERS
+========================= */
+function clamp(a,b,c){return Math.max(a,Math.min(b,c))}
+function lerp(a,b,t){return a+(b-a)*t}
+function easeOut(t){return 1-Math.pow(1-t,3)}
+function rnd(a,b){return a+Math.random()*(b-a)}
+function sign(v){return v<0?-1:1}
+
+/* =========================
+   STATE
+========================= */
+let phase="intro";
+let enemies=[],bullets=[],particles=[],hearts=[],rings=[];
+let canFire=false;
+
+let shake=0, flash=0;
+let hitFreeze=0;        // small slowmo frames
+let rgbSplit=0;         // chromatic-ish effect intensity
+let camZoom=1;          // micro zoom on hits
+let vignette=0.35;
+
+let stageOverlay=0;     // stage clear overlay alpha timer
+let cinematic=0;        // boss intro cinematic timer
+let bgHue=0;            // background hue shift (0 normal -> 1 boss)
+let bgPulse=0;
+
+let messages=[];        // typewriter message queue
+let activeMsg=null;     // {full, shown, a, y, t}
+let uiHint=1;           // tutorial hint alpha
+
+const player={ x:()=>c.width/2, y:()=>c.height-120 };
+
+const enemySeq=["enemy1","enemy2","enemy3","enemy2","enemy1"];
+const texts=[
+  "Kalbim seni ilk gördüğü an seçti.",
+  "Bu evrende adresim sensin.",
+  "Ne olursa olsun seni seçerim.",
+  "Sen benim en güvenli sığınağımsın.",
+  "Aşk… senin adınla başlıyor."
+];
+let ei=0;
+let bossTimer=0;
+const BOSS_MAX_HP=90;
+
+let last=performance.now();
+
+/* =========================
+   BACKGROUND FX
+========================= */
+let stars=[],dust=[],warp=[];
+function initBackground(){
+  stars=[]; dust=[]; warp=[];
+  const sCount = Math.floor(clamp(90, c.width*c.height/13000, 260));
+  const dCount = Math.floor(clamp(70, c.width*c.height/19000, 180));
+
+  for(let i=0;i<sCount;i++){
+    stars.push({
+      x:Math.random()*c.width,
+      y:Math.random()*c.height,
+      z:Math.random(),            // parallax depth
+      r:Math.random()*1.6+0.4,
+      tw:Math.random()*Math.PI*2
+    });
+  }
+  for(let i=0;i<dCount;i++){
+    dust.push({
+      x:Math.random()*c.width,
+      y:Math.random()*c.height,
+      a:Math.random()*0.32+0.06,
+      r:Math.random()*130+70,
+      vx:(Math.random()-.5)*0.18,
+      vy:(Math.random()-.5)*0.18
+    });
+  }
+  for(let i=0;i<80;i++){
+    warp.push({
+      x:Math.random()*c.width,
+      y:Math.random()*c.height,
+      l:Math.random()*160+60,
+      s:Math.random()*5+2,
+      a:Math.random()*0.16+0.04
+    });
+  }
+}
+initBackground();
+addEventListener("resize",initBackground,{passive:true});
+if(window.visualViewport){
+  visualViewport.addEventListener("resize", initBackground, {passive:true});
+}
+
+function drawBackground(dt){
+  // Base fill
+  ctx.fillStyle="#020b2d";
+  ctx.fillRect(0,0,c.width,c.height);
+
+  bgPulse = (bgPulse + dt*0.9)%(Math.PI*2);
+  const pulse = 0.5 + Math.sin(bgPulse)*0.5;
+
+  // Hue shift feel: mix blue->purple on boss
+  const boss = bgHue; // 0..1
+  const nebR = Math.floor(lerp(70, 155, boss));
+  const nebG = Math.floor(lerp(160, 90, boss));
+  const nebB = Math.floor(lerp(255, 255, boss));
+
+  // Nebula blobs
+  for(const d of dust){
+    d.x += d.vx*dt*60; d.y += d.vy*dt*60;
+    if(d.x<-220) d.x=c.width+220;
+    if(d.x>c.width+220) d.x=-220;
+    if(d.y<-220) d.y=c.height+220;
+    if(d.y>c.height+220) d.y=-220;
+
+    const rad = d.r*(0.78+0.22*pulse);
+    const g=ctx.createRadialGradient(d.x,d.y,0,d.x,d.y,rad);
+    g.addColorStop(0,`rgba(${nebR},${nebG},${nebB},${d.a})`);
+    g.addColorStop(1,`rgba(0,10,40,0)`);
+    ctx.fillStyle=g;
+    ctx.beginPath();
+    ctx.arc(d.x,d.y,rad,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  // Stars (3-depth)
+  const speedBase = (phase==="boss") ? 1.9 : 1.0;
+  for(const s of stars){
+    s.tw += dt*2.2*(0.6+s.z);
+    const tw = 0.55 + 0.45*Math.sin(s.tw);
+
+    s.y += dt*60*(0.15 + 0.9*s.z)*speedBase;
+    if(s.y>c.height+10){ s.y=-10; s.x=Math.random()*c.width; }
+
+    ctx.globalAlpha = 0.18 + tw*0.70;
+    ctx.fillStyle = boss>0.2 ? "#e9d7ff" : "#bfe9ff";
+    ctx.fillRect(s.x, s.y, s.r, s.r);
+    ctx.globalAlpha = 1;
+  }
+
+  // Warp lines (boss or intense shake)
+  if(phase==="boss" || shake>7){
+    for(const w of warp){
+      w.y += dt*60*w.s*speedBase;
+      if(w.y>c.height+70){ w.y=-70; w.x=Math.random()*c.width; w.l=Math.random()*170+70; }
+      ctx.globalAlpha=w.a*(0.6+0.6*boss);
+      ctx.fillStyle = boss>0.2 ? "#d6a8ff" : "#7fd6ff";
+      ctx.fillRect(w.x, w.y, 2, w.l);
+      ctx.globalAlpha=1;
+    }
+  }
+}
+
+/* =========================
+   FX / PARTICLES
+========================= */
+const MAX_PARTICLES=900;
+
+function explode(x,y,p=1,color="#9fdcff"){
+  const count = Math.floor(36*p);
+  for(let i=0;i<count;i++){
+    if(particles.length>MAX_PARTICLES) break;
+    particles.push({
+      x,y,
+      vx:(Math.random()-.5)*6*p,
+      vy:(Math.random()-.5)*6*p,
+      l:0.55+Math.random()*0.35,
+      c:color,
+      s:Math.random()<0.3?3:4
+    });
+  }
+  shake = Math.max(shake, 9);
+  camZoom = Math.max(camZoom, 1.02);
+}
+
+function impactRing(x,y,color="rgba(160,230,255,0.9)"){
+  rings.push({x,y,r:8,a:1,c:color, w:3});
+}
+
+function queueMsg(text){
+  messages.push(text);
+}
+
+function startMsg(text){
+  activeMsg={
+    full:text,
+    shown:"",
+    a:1,
+    y: Math.max(170, c.height*0.46),
+    t:0
+  };
+}
+
+/* =========================
+   PIXEL HEART (replace emoji)
+========================= */
+function spawnHeart(dir){
+  hearts.push({
+    x:Math.random()*c.width,
+    y:dir==="down"?-40:c.height+40,
+    v:dir==="down"?rnd(90,150):-rnd(90,150),
+    s:clamp(10, innerWidth/70, 16),   // pixel scale
+    a:1
+  });
+}
+function drawPixelHeart(x,y,scale,alpha=1){
+  // pixel art heart (grid) drawn as rectangles
+  // 8x7 heart pattern
+  const P=[
+    "01100110",
+    "11111111",
+    "11111111",
+    "01111110",
+    "00111100",
+    "00011000",
+    "00000000"
+  ];
+  ctx.save();
+  ctx.globalAlpha=alpha;
+  ctx.fillStyle="#9fdcff";
+  for(let row=0; row<P.length; row++){
+    for(let col=0; col<P[row].length; col++){
+      if(P[row][col]==="1"){
+        ctx.fillRect(x + col*scale, y + row*scale, scale, scale);
+      }
+    }
+  }
+  ctx.restore();
+}
+
+/* =========================
+   SPAWN
+========================= */
+function spawnEnemy(type){
+  canFire=false;
+  enemies.push({type,x:c.width/2,y:-180,w:110,h:110,v:140,hp:12});
+  shake=Math.max(shake, 10);
+}
+
+function spawnBoss(){
+  enemies.push({
+    type:"boss",
+    x:c.width/2,
+    y:-320,
+    w:280,h:280,
+    v:90,
+    hp:BOSS_MAX_HP
+  });
+}
+
+/* =========================
+   UI DRAW HELPERS
+========================= */
+function drawCenteredText(text, y, font, fillStyle, strokeStyle=null, strokeW=4){
+  ctx.save();
+  ctx.font = font;
+  ctx.textAlign="left";
+  const w = ctx.measureText(text).width;
+  const x = (c.width - w)/2;
+  if(strokeStyle){
+    ctx.lineWidth = strokeW;
+    ctx.strokeStyle = strokeStyle;
+    ctx.strokeText(text, x, y);
+  }
+  ctx.fillStyle = fillStyle;
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+function drawPanel(x,y,w,h,alpha=0.55){
+  ctx.save();
+  ctx.globalAlpha=alpha;
+  ctx.fillStyle="rgba(0,0,0,0.85)";
+  ctx.fillRect(x,y,w,h);
+  ctx.globalAlpha=alpha*0.9;
+  ctx.strokeStyle="rgba(159,220,255,0.55)";
+  ctx.lineWidth=2;
+  ctx.strokeRect(x+1,y+1,w-2,h-2);
+  ctx.restore();
+}
+
+function drawVignette(strength){
+  // dark corners radial gradient
+  const g=ctx.createRadialGradient(c.width/2,c.height/2, Math.min(c.width,c.height)*0.25,
+                                  c.width/2,c.height/2, Math.max(c.width,c.height)*0.65);
+  g.addColorStop(0,`rgba(0,0,0,0)`);
+  g.addColorStop(1,`rgba(0,0,0,${strength})`);
+  ctx.fillStyle=g;
+  ctx.fillRect(0,0,c.width,c.height);
+}
+
+/* =========================
+   UPDATE (deltaTime)
+========================= */
+function update(dt){
+  // dt in seconds; normalize for logic
+  if(shake>0) shake = Math.max(0, shake - dt*18);
+  if(flash>0) flash = Math.max(0, flash - dt*60);
+  if(rgbSplit>0) rgbSplit = Math.max(0, rgbSplit - dt*3.5);
+  camZoom = lerp(camZoom, 1, 1-Math.pow(0.001, dt)); // smooth back
+
+  // phase-driven hue
+  const targetHue = (phase==="boss" || phase==="ending") ? 1 : 0;
+  bgHue = lerp(bgHue, targetHue, 1-Math.pow(0.01, dt));
+
+  // tutorial hint fade
+  if(phase!=="intro") uiHint = Math.max(0, uiHint - dt*0.6);
+
+  // stage overlay decay
+  if(stageOverlay>0) stageOverlay = Math.max(0, stageOverlay - dt*1.8);
+
+  // cinematic timer
+  if(cinematic>0) cinematic = Math.max(0, cinematic - dt*1.2);
+
+  // typewriter message
+  if(!activeMsg && messages.length>0){
+    startMsg(messages.shift());
+  }
+  if(activeMsg){
+    activeMsg.t += dt;
+    // typewriter speed
+    const cps = (phase==="boss") ? 26 : 22; // chars per second
+    const targetLen = Math.min(activeMsg.full.length, Math.floor(activeMsg.t*cps));
+    activeMsg.shown = activeMsg.full.slice(0, targetLen);
+    // fade out after done
+    if(targetLen>=activeMsg.full.length && activeMsg.t> (activeMsg.full.length/cps + 1.2)){
+      activeMsg.a = Math.max(0, activeMsg.a - dt*0.9);
+      if(activeMsg.a<=0) activeMsg=null;
+    }
+  }
+
+  // hit freeze (slow motion)
+  if(hitFreeze>0){
+    hitFreeze -= dt;
+    // during freeze, run very little logic
+    dt *= 0.15;
+  }
+
+  // Intro -> enemies
+  if(phase==="intro"){
+    // after ~2 seconds
+    if(performance.now()-startTime>2000){
+      phase="enemies";
+      spawnEnemy(enemySeq[ei]);
+    }
+  }
+
+  // Enemies phase
+  if(phase==="enemies"){
+    const e=enemies[0];
+    if(e){
+      e.y += dt*e.v;
+      if(e.y > player.y()-360) canFire=true;
+
+      // auto-fire
+      if(canFire){
+        fireAccum += dt;
+        const rate = 0.11; // seconds
+        while(fireAccum>=rate){
+          fireAccum-=rate;
+          bullets.push({x:player.x(),y:player.y()-60,v:620});
+        }
+      }
+
+      // bullets move & hit
+      for(let i=bullets.length-1;i>=0;i--){
+        const b=bullets[i];
+        b.y -= dt*b.v;
+        if(b.y<-50){ bullets.splice(i,1); continue; }
+
+        if(Math.abs(b.x-e.x)<40 && Math.abs(b.y-e.y)<40){
+          bullets.splice(i,1);
+          e.hp--;
+          explode(e.x,e.y,0.9,"#9fdcff");
+          impactRing(e.x,e.y,"rgba(159,220,255,0.95)");
+          hitFreeze = Math.max(hitFreeze, 0.045);
+          rgbSplit = Math.max(rgbSplit, 0.9);
+        }
+      }
+
+      if(e.hp<=0){
+        explode(e.x,e.y,2.2,"#9fdcff");
+        impactRing(e.x,e.y,"rgba(255,255,255,0.8)");
+        bullets=[]; enemies=[]; canFire=false;
+
+        // stage clear overlay + message
+        stageOverlay = 1;
+        queueMsg(texts[ei]);
+
+        ei++;
+        if(ei<enemySeq.length){
+          setTimeout(()=>spawnEnemy(enemySeq[ei]), 700);
+        }else{
+          // boss cinematic
+          phase="bossIntro";
+          cinematic = 1; // triggers overlay
+          setTimeout(()=>{
+            document.getElementById("title").style.opacity=0;
+            flash=35; shake=Math.max(shake,14);
+            spawnBoss();
+            phase="boss";
+          }, 650);
+        }
+      }
+    }
+  }
+
+  // Boss phase
+  if(phase==="boss"){
+    const b=enemies[0];
+    if(b){
+      if(b.y<180){
+        b.y += dt*b.v;
+      }else{
+        bossTimer += dt;
+        canFire=true;
+
+        // faster fire on boss
+        fireAccum += dt;
+        const rate = 0.09;
+        while(fireAccum>=rate){
+          fireAccum-=rate;
+          bullets.push({x:player.x(),y:player.y()-60,v:720});
+        }
+
+        // bullets & hit
+        for(let i=bullets.length-1;i>=0;i--){
+          const bl=bullets[i];
+          bl.y -= dt*bl.v;
+          if(bl.y<-50){ bullets.splice(i,1); continue; }
+
+          if(Math.abs(bl.x-b.x)<100 && Math.abs(bl.y-b.y)<100){
+            bullets.splice(i,1);
+            b.hp--;
+            explode(bl.x,bl.y,1.05,"#ff6b6b");
+            impactRing(bl.x,bl.y,"rgba(255,110,110,0.9)");
+            hitFreeze = Math.max(hitFreeze, 0.05);
+            rgbSplit = Math.max(rgbSplit, 1.2);
+            camZoom = Math.max(camZoom, 1.03);
+            shake = Math.max(shake, 10);
+          }
+        }
+
+        if(b.hp<=0 || bossTimer>12.0){
+          explode(b.x,b.y,6.5,"#9fdcff");
+          impactRing(b.x,b.y,"rgba(159,220,255,0.9)");
+          enemies=[]; bullets=[]; phase="ending";
+          // ending burst hearts
+          for(let k=0;k<25;k++) spawnHeart(Math.random()<0.5?"down":"up");
+        }
+      }
+    }
+  }
+
+  // Ending phase (pixel hearts stream)
+  if(phase==="ending"){
+    heartAccum += dt;
+    while(heartAccum>0.06){
+      heartAccum-=0.06;
+      spawnHeart(Math.random()<0.5?"down":"up");
+    }
+  }
+
+  // particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.x += p.vx*dt*60;
+    p.y += p.vy*dt*60;
+    p.vx *= (1 - dt*1.2);
+    p.vy *= (1 - dt*1.2);
+    p.l -= dt;
+    if(p.l<=0) particles.splice(i,1);
+  }
+
+  // rings
+  for(let i=rings.length-1;i>=0;i--){
+    const r=rings[i];
+    r.r += dt*420;
+    r.a -= dt*1.9;
+    r.w = Math.max(1, r.w - dt*6);
+    if(r.a<=0) rings.splice(i,1);
+  }
+
+  // hearts
+  for(let i=hearts.length-1;i>=0;i--){
+    const h=hearts[i];
+    h.y += dt*h.v;
+    h.a -= dt*0.08;
+    if(h.y<-80 || h.y>c.height+80 || h.a<=0) hearts.splice(i,1);
+  }
+}
+
+/* =========================
+   DRAW (with camera & effects)
+========================= */
+function drawScene(dt){
+  // background: image + animated overlay
+  if(img.bg.loaded){
+    ctx.drawImage(img.bg,0,0,c.width,c.height);
+    ctx.globalAlpha=0.65;
+    drawBackground(dt);
+    ctx.globalAlpha=1;
+  }else{
+    drawBackground(dt);
+  }
+
+  // player
+  if(img.player.loaded){
+    ctx.drawImage(img.player, player.x()-44, player.y()-44, 88,88);
+  }
+
+  // bullets
+  ctx.fillStyle="#9fdcff";
+  for(const b of bullets){
+    ctx.fillRect(b.x-2,b.y-14,4,14);
+  }
+
+  // enemies/boss
+  for(const e of enemies){
+    if(img[e.type].loaded){
+      ctx.drawImage(img[e.type], e.x-e.w/2, e.y-e.h/2, e.w,e.h);
+    }
+  }
+
+  // rings
+  for(const r of rings){
+    ctx.save();
+    ctx.globalAlpha=r.a;
+    ctx.strokeStyle=r.c;
+    ctx.lineWidth=r.w;
+    ctx.beginPath();
+    ctx.arc(r.x,r.y,r.r,0,Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // particles
+  for(const p of particles){
+    ctx.fillStyle=p.c;
+    ctx.fillRect(p.x,p.y,p.s,p.s);
+  }
+
+  // pixel hearts
+  for(const h of hearts){
+    drawPixelHeart(h.x, h.y, h.s, Math.max(0,h.a));
+  }
+}
+
+function drawHUD(){
+  // Top-left: Stage
+  const pad=18;
+  const stageNow = Math.min(ei+1, enemySeq.length+1);
+  const totalStages = enemySeq.length+1;
+
+  ctx.save();
+  ctx.globalAlpha=0.95;
+  ctx.fillStyle="rgba(0,0,0,0.55)";
+  ctx.fillRect(pad, pad, 220, 54);
+  ctx.strokeStyle="rgba(159,220,255,0.45)";
+  ctx.lineWidth=2;
+  ctx.strokeRect(pad+1, pad+1, 218, 52);
+
+  ctx.fillStyle="#9fdcff";
+  ctx.font="bold 18px Courier New";
+  ctx.fillText(`GÖREV ${stageNow}/${totalStages}`, pad+14, pad+34);
+  ctx.restore();
+
+  // Boss HP bar top-center
+  if(phase==="boss" && enemies[0]){
+    const b=enemies[0];
+    const w = clamp(260, c.width*0.48, 520);
+    const h = 18;
+    const x = (c.width-w)/2;
+    const y = 18;
+
+    const hp = clamp(0, b.hp, BOSS_MAX_HP);
+    const pct = hp / BOSS_MAX_HP;
+
+    ctx.save();
+    ctx.globalAlpha=0.98;
+    // frame
+    ctx.fillStyle="rgba(0,0,0,0.6)";
+    ctx.fillRect(x-8,y-8,w+16,h+34);
+    ctx.strokeStyle="rgba(255,120,120,0.5)";
+    ctx.lineWidth=2;
+    ctx.strokeRect(x-7,y-7,w+14,h+32);
+
+    // bar bg
+    ctx.fillStyle="rgba(255,255,255,0.10)";
+    ctx.fillRect(x,y,w,h);
+
+    // bar fill
+    ctx.fillStyle="rgba(255,90,90,0.85)";
+    ctx.fillRect(x,y,w*pct,h);
+
+    // text
+    ctx.fillStyle="#ffffff";
+    ctx.font="bold 16px Courier New";
+    const label=`BOSS HP ${hp}/${BOSS_MAX_HP}`;
+    const tw=ctx.measureText(label).width;
+    ctx.fillText(label, c.width/2 - tw/2, y+h+20);
+
+    ctx.restore();
+  }
+
+  // Boss title safe area (no overlap with ending now)
+  if(phase==="boss"){
+    drawCenteredText(
+      "SON GÖREV",
+      112,
+      "bold " + clamp(28, c.width/20, 46) + "px Courier New",
+      "#ff4d4d",
+      "rgba(0,0,0,0.55)",
+      5
+    );
+  }
+}
+
+function drawOverlays(dt){
+  // tutorial hint (intro)
+  if(uiHint>0.01){
+    const a = uiHint;
+    const w = clamp(280, c.width*0.55, 740);
+    const h = 86;
+    const x = (c.width-w)/2;
+    const y = c.height*0.68;
+
+    drawPanel(x,y,w,h,0.45*a);
+    ctx.save();
+    ctx.globalAlpha=a;
+    ctx.fillStyle="#ffffff";
+    ctx.font="bold " + clamp(18, c.width/55, 22) + "px Courier New";
+    drawCenteredText("HAZIR MISIN?  🔥", y+34, ctx.font, "#ffffff", "rgba(0,0,0,0.5)", 4);
+    ctx.font= clamp(14, c.width/70, 18) + "px Courier New";
+    drawCenteredText("Ateş otomatik — kalbini hedefe kilitle.", y+62, ctx.font, "#9fdcff", "rgba(0,0,0,0.45)", 3);
+    ctx.restore();
+  }
+
+  // stage clear overlay
+  if(stageOverlay>0.01){
+    const a = Math.min(1, stageOverlay);
+    ctx.save();
+    ctx.globalAlpha=0.18*a;
+    ctx.fillStyle="#9fdcff";
+    ctx.fillRect(0,0,c.width,c.height);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha=0.95*a;
+    drawCenteredText(
+      "GÖREV TAMAMLANDI",
+      c.height*0.24,
+      "bold " + clamp(26, c.width/22, 44) + "px Courier New",
+      "#ffffff",
+      "rgba(0,0,0,0.55)",
+      6
+    );
+    ctx.restore();
+  }
+
+  // boss cinematic intro overlay
+  if(phase==="bossIntro" || cinematic>0.01){
+    const a = Math.max(0, cinematic);
+    ctx.save();
+    ctx.globalAlpha=0.55*a;
+    ctx.fillStyle="rgba(0,0,0,0.75)";
+    ctx.fillRect(0,0,c.width,c.height);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha=0.95*a;
+    drawCenteredText(
+      "UYARI!",
+      c.height*0.30,
+      "bold " + clamp(34, c.width/18, 64) + "px Courier New",
+      "#ff6b6b",
+      "rgba(0,0,0,0.6)",
+      8
+    );
+    drawCenteredText(
+      "BOSS YAKLAŞIYOR",
+      c.height*0.36,
+      "bold " + clamp(22, c.width/26, 40) + "px Courier New",
+      "#ffffff",
+      "rgba(0,0,0,0.55)",
+      6
+    );
+    ctx.restore();
+  }
+
+  // typewriter message panel
+  if(activeMsg){
+    const a=activeMsg.a;
+    const w = clamp(320, c.width*0.72, 980);
+    const h = 86;
+    const x = (c.width-w)/2;
+    const y = activeMsg.y;
+
+    drawPanel(x,y,w,h,0.55*a);
+
+    ctx.save();
+    ctx.globalAlpha=a;
+    ctx.fillStyle="#ffffff";
+    ctx.font="bold " + clamp(18, c.width/50, 26) + "px Courier New";
+    // render multi-line if needed (basic wrap)
+    const txt = activeMsg.shown;
+    const maxW = w-40;
+    const words = txt.split(" ");
+    let line="", lines=[];
+    for(const word of words){
+      const test = line ? line+" "+word : word;
+      if(ctx.measureText(test).width>maxW){
+        lines.push(line);
+        line=word;
+      }else line=test;
+    }
+    if(line) lines.push(line);
+    lines = lines.slice(0,2);
+
+    for(let i=0;i<lines.length;i++){
+      const yy = y + 36 + i*28;
+      drawCenteredText(lines[i], yy, ctx.font, "#ffffff", "rgba(0,0,0,0.55)", 4);
+    }
+    ctx.restore();
+  }
+
+  // ending text (fade + float)
+  if(phase==="ending"){
+    const s = (performance.now()*0.001);
+    const floatY = Math.sin(s*1.6)*10;
+    const baseY = Math.round(c.height*0.58 + floatY);
+
+    drawCenteredText(
+      "İYİ Kİ SEN PELİN",
+      baseY,
+      "bold " + clamp(30, c.width/18, 54) + "px Courier New",
+      "#9fdcff",
+      "rgba(0,0,0,0.55)",
+      6
+    );
+    drawCenteredText(
+      "Kalbim sonsuza kadar senin.",
+      baseY + clamp(36, c.width/30, 46),
+      clamp(20, c.width/34, 34) + "px Courier New",
+      "#ffffff",
+      "rgba(0,0,0,0.45)",
+      4
+    );
+  }
+
+  // flash overlay
+  if(flash>0.01){
+    ctx.fillStyle=`rgba(255,0,0,${0.18*Math.min(1,flash/35)})`;
+    ctx.fillRect(0,0,c.width,c.height);
+  }
+
+  // vignette (boss gets stronger)
+  const v = lerp(0.28, 0.46, bgHue);
+  drawVignette(v);
+}
+
+/* =========================
+   RGB SPLIT (simple pro trick)
+   We render the scene once, then re-draw with small offsets.
+========================= */
+const off=document.createElement("canvas");
+const offCtx=off.getContext("2d", { alpha:false });
+
+function ensureOff(){
+  if(off.width!==c.width || off.height!==c.height){
+    off.width=c.width; off.height=c.height;
+  }
+}
+
+/* =========================
+   LOOP
+========================= */
+let fireAccum=0;
+let heartAccum=0;
+const startTime = performance.now();
+
+function loop(now){
+  const dt = Math.min(0.033, (now-last)/1000); // cap dt
+  last=now;
+
+  // viewport değişimi (özellikle mobilde) anlık yakalama
+  // (innerHeight değişimleri bazen resize tetiklemeden geliyor)
+  const {w,h}=getViewportSize();
+  if(c.width!==w || c.height!==h){ resize(); initBackground(); }
+
+  update(dt);
+
+  // camera (shake + zoom)
+  ensureOff();
+
+  // wrapper render
+  renderTo(offCtx, dt);
+
+  // RGB split effect on main canvas
+  ctx.setTransform(1,0,0,1,0,0);
+  if(rgbSplit>0.01){
+    const k = Math.min(1, rgbSplit);
+    const ox = (Math.random()-.5)*3*k;
+    const oy = (Math.random()-.5)*3*k;
+
+    // base
+    ctx.drawImage(off,0,0);
+
+    // red channel-ish (fake by tinting with globalComposite)
+    ctx.save();
+    ctx.globalAlpha=0.22*k;
+    ctx.drawImage(off, ox, 0);
+    ctx.restore();
+
+    // blue channel-ish
+    ctx.save();
+    ctx.globalAlpha=0.18*k;
+    ctx.drawImage(off, -ox, oy);
+    ctx.restore();
+  }else{
+    ctx.drawImage(off,0,0);
+  }
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* =========================
+   Render wrapper to target context
+========================= */
+function renderTo(target, dt){
+  target.save();
+
+  // apply camera
+  const sx = (Math.random()-.5)*shake;
+  const sy = (Math.random()-.5)*shake;
+
+  const z = camZoom;
+  target.setTransform(1,0,0,1,0,0);
+  target.clearRect(0,0,c.width,c.height);
+
+  target.translate(c.width/2 + sx, c.height/2 + sy);
+  target.scale(z,z);
+  target.translate(-c.width/2, -c.height/2);
+
+  // draw scene
+  if(img.bg.loaded){
+    target.drawImage(img.bg,0,0,c.width,c.height);
+    target.globalAlpha=0.65;
+    drawBackgroundTo(target, dt);
+    target.globalAlpha=1;
+  }else{
+    drawBackgroundTo(target, dt);
+  }
+
+  if(img.player.loaded){
+    target.drawImage(img.player, player.x()-44, player.y()-44, 88,88);
+  }
+
+  target.fillStyle="#9fdcff";
+  for(const b of bullets){
+    target.fillRect(b.x-2,b.y-14,4,14);
+  }
+
+  for(const e of enemies){
+    if(img[e.type].loaded){
+      target.drawImage(img[e.type], e.x-e.w/2, e.y-e.h/2, e.w,e.h);
+    }
+  }
+
+  for(const r of rings){
+    target.save();
+    target.globalAlpha=r.a;
+    target.strokeStyle=r.c;
+    target.lineWidth=r.w;
+    target.beginPath();
+    target.arc(r.x,r.y,r.r,0,Math.PI*2);
+    target.stroke();
+    target.restore();
+  }
+
+  for(const p of particles){
+    target.fillStyle=p.c;
+    target.fillRect(p.x,p.y,p.s,p.s);
+  }
+
+  for(const h of hearts){
+    drawPixelHeartTo(target, h.x, h.y, h.s, Math.max(0,h.a));
+  }
+
+  target.restore();
+
+  // HUD & overlays (screen space)
+  drawHUDTo(target);
+  drawOverlaysTo(target, dt);
+}
+
+/* =========================
+   Target-context versions
+========================= */
+function drawBackgroundTo(target, dt){
+  target.fillStyle="#020b2d";
+  target.fillRect(0,0,c.width,c.height);
+
+  bgPulse = (bgPulse + dt*0.9)%(Math.PI*2);
+  const pulse = 0.5 + Math.sin(bgPulse)*0.5;
+
+  const boss = bgHue;
+  const nebR = Math.floor(lerp(70, 155, boss));
+  const nebG = Math.floor(lerp(160, 90, boss));
+  const nebB = Math.floor(lerp(255, 255, boss));
+
+  // Nebula + movement (eksiksiz)
+  for(const d of dust){
+    d.x += d.vx*dt*60; d.y += d.vy*dt*60;
+    if(d.x<-220) d.x=c.width+220;
+    if(d.x>c.width+220) d.x=-220;
+    if(d.y<-220) d.y=c.height+220;
+    if(d.y>c.height+220) d.y=-220;
+
+    const rad = d.r*(0.78+0.22*pulse);
+    const g=target.createRadialGradient(d.x,d.y,0,d.x,d.y,rad);
+    g.addColorStop(0,`rgba(${nebR},${nebG},${nebB},${d.a})`);
+    g.addColorStop(1,`rgba(0,10,40,0)`);
+    target.fillStyle=g;
+    target.beginPath();
+    target.arc(d.x,d.y,rad,0,Math.PI*2);
+    target.fill();
+  }
+
+  const speedBase = (phase==="boss") ? 1.9 : 1.0;
+
+  // Stars + movement (eksiksiz)
+  for(const s of stars){
+    s.tw += dt*2.2*(0.6+s.z);
+    const tw = 0.55 + 0.45*Math.sin(s.tw);
+
+    s.y += dt*60*(0.15 + 0.9*s.z)*speedBase;
+    if(s.y>c.height+10){ s.y=-10; s.x=Math.random()*c.width; }
+
+    target.globalAlpha = 0.18 + tw*0.70;
+    target.fillStyle = boss>0.2 ? "#e9d7ff" : "#bfe9ff";
+    target.fillRect(s.x, s.y, s.r, s.r);
+    target.globalAlpha = 1;
+  }
+
+  // Warp + movement (eksiksiz)
+  if(phase==="boss" || shake>7){
+    for(const w of warp){
+      w.y += dt*60*w.s*speedBase;
+      if(w.y>c.height+70){ w.y=-70; w.x=Math.random()*c.width; w.l=Math.random()*170+70; }
+      target.globalAlpha=w.a*(0.6+0.6*boss);
+      target.fillStyle = boss>0.2 ? "#d6a8ff" : "#7fd6ff";
+      target.fillRect(w.x, w.y, 2, w.l);
+      target.globalAlpha=1;
+    }
+  }
+}
+
+function drawPixelHeartTo(target,x,y,scale,alpha=1){
+  const P=[
+    "01100110",
+    "11111111",
+    "11111111",
+    "01111110",
+    "00111100",
+    "00011000",
+    "00000000"
+  ];
+  target.save();
+  target.globalAlpha=alpha;
+  target.fillStyle="#9fdcff";
+  for(let row=0; row<P.length; row++){
+    for(let col=0; col<P[row].length; col++){
+      if(P[row][col]==="1"){
+        target.fillRect(x + col*scale, y + row*scale, scale, scale);
+      }
+    }
+  }
+  target.restore();
+}
+
+function drawCenteredTextTo(target,text,y,font,fill,stroke=null,sw=4){
+  target.save();
+  target.font=font;
+  target.textAlign="left";
+  const w=target.measureText(text).width;
+  const x=(c.width-w)/2;
+  if(stroke){
+    target.lineWidth=sw;
+    target.strokeStyle=stroke;
+    target.strokeText(text,x,y);
+  }
+  target.fillStyle=fill;
+  target.fillText(text,x,y);
+  target.restore();
+}
+function drawPanelTo(target,x,y,w,h,alpha=0.55){
+  target.save();
+  target.globalAlpha=alpha;
+  target.fillStyle="rgba(0,0,0,0.85)";
+  target.fillRect(x,y,w,h);
+  target.globalAlpha=alpha*0.9;
+  target.strokeStyle="rgba(159,220,255,0.55)";
+  target.lineWidth=2;
+  target.strokeRect(x+1,y+1,w-2,h-2);
+  target.restore();
+}
+function drawVignetteTo(target,strength){
+  const g=target.createRadialGradient(c.width/2,c.height/2, Math.min(c.width,c.height)*0.25,
+                                     c.width/2,c.height/2, Math.max(c.width,c.height)*0.65);
+  g.addColorStop(0,`rgba(0,0,0,0)`);
+  g.addColorStop(1,`rgba(0,0,0,${strength})`);
+  target.fillStyle=g;
+  target.fillRect(0,0,c.width,c.height);
+}
+
+function drawHUDTo(target){
+  const pad=18;
+  const stageNow = Math.min(ei+1, enemySeq.length+1);
+  const totalStages = enemySeq.length+1;
+
+  target.save();
+  target.globalAlpha=0.95;
+  target.fillStyle="rgba(0,0,0,0.55)";
+  target.fillRect(pad, pad, 220, 54);
+  target.strokeStyle="rgba(159,220,255,0.45)";
+  target.lineWidth=2;
+  target.strokeRect(pad+1, pad+1, 218, 52);
+  target.fillStyle="#9fdcff";
+  target.font="bold 18px Courier New";
+  target.fillText(`GÖREV ${stageNow}/${totalStages}`, pad+14, pad+34);
+  target.restore();
+
+  if(phase==="boss" && enemies[0]){
+    const b=enemies[0];
+    const w = clamp(260, c.width*0.48, 520);
+    const h = 18;
+    const x = (c.width-w)/2;
+    const y = 18;
+
+    const hp = clamp(0, b.hp, BOSS_MAX_HP);
+    const pct = hp / BOSS_MAX_HP;
+
+    target.save();
+    target.globalAlpha=0.98;
+    target.fillStyle="rgba(0,0,0,0.6)";
+    target.fillRect(x-8,y-8,w+16,h+34);
+    target.strokeStyle="rgba(255,120,120,0.5)";
+    target.lineWidth=2;
+    target.strokeRect(x-7,y-7,w+14,h+32);
+
+    target.fillStyle="rgba(255,255,255,0.10)";
+    target.fillRect(x,y,w,h);
+
+    target.fillStyle="rgba(255,90,90,0.85)";
+    target.fillRect(x,y,w*pct,h);
+
+    target.fillStyle="#ffffff";
+    target.font="bold 16px Courier New";
+    const label=`BOSS HP ${hp}/${BOSS_MAX_HP}`;
+    const tw=target.measureText(label).width;
+    target.fillText(label, c.width/2 - tw/2, y+h+20);
+    target.restore();
+  }
+
+  if(phase==="boss"){
+    drawCenteredTextTo(
+      target,
+      "SON GÖREV",
+      112,
+      "bold " + clamp(28, c.width/20, 46) + "px Courier New",
+      "#ff4d4d",
+      "rgba(0,0,0,0.55)",
+      5
+    );
+  }
+}
+
+function drawOverlaysTo(target, dt){
+  if(uiHint>0.01){
+    const a = uiHint;
+    const w = clamp(280, c.width*0.55, 740);
+    const h = 86;
+    const x = (c.width-w)/2;
+    const y = c.height*0.68;
+
+    drawPanelTo(target,x,y,w,h,0.45*a);
+    target.save();
+    target.globalAlpha=a;
+    target.font="bold " + clamp(18, c.width/55, 22) + "px Courier New";
+    drawCenteredTextTo(target,"HAZIR MISIN?  🔥", y+34, target.font, "#ffffff", "rgba(0,0,0,0.5)", 4);
+    target.font= clamp(14, c.width/70, 18) + "px Courier New";
+    drawCenteredTextTo(target,"Ateş otomatik — kalbini hedefe kilitle.", y+62, target.font, "#9fdcff", "rgba(0,0,0,0.45)", 3);
+    target.restore();
+  }
+
+  if(stageOverlay>0.01){
+    const a = Math.min(1, stageOverlay);
+    target.save();
+    target.globalAlpha=0.18*a;
+    target.fillStyle="#9fdcff";
+    target.fillRect(0,0,c.width,c.height);
+    target.restore();
+
+    target.save();
+    target.globalAlpha=0.95*a;
+    drawCenteredTextTo(
+      target,
+      "GÖREV TAMAMLANDI",
+      c.height*0.24,
+      "bold " + clamp(26, c.width/22, 44) + "px Courier New",
+      "#ffffff",
+      "rgba(0,0,0,0.55)",
+      6
+    );
+    target.restore();
+  }
+
+  if(phase==="bossIntro" || cinematic>0.01){
+    const a = Math.max(0, cinematic);
+    target.save();
+    target.globalAlpha=0.55*a;
+    target.fillStyle="rgba(0,0,0,0.75)";
+    target.fillRect(0,0,c.width,c.height);
+    target.restore();
+
+    target.save();
+    target.globalAlpha=0.95*a;
+    drawCenteredTextTo(
+      target,
+      "UYARI!",
+      c.height*0.30,
+      "bold " + clamp(34, c.width/18, 64) + "px Courier New",
+      "#ff6b6b",
+      "rgba(0,0,0,0.6)",
+      8
+    );
+    drawCenteredTextTo(
+      target,
+      "BOSS YAKLAŞIYOR",
+      c.height*0.36,
+      "bold " + clamp(22, c.width/26, 40) + "px Courier New",
+      "#ffffff",
+      "rgba(0,0,0,0.55)",
+      6
+    );
+    target.restore();
+  }
+
+  if(activeMsg){
+    const a=activeMsg.a;
+    const w = clamp(320, c.width*0.72, 980);
+    const h = 86;
+    const x = (c.width-w)/2;
+    const y = activeMsg.y;
+
+    drawPanelTo(target,x,y,w,h,0.55*a);
+
+    target.save();
+    target.globalAlpha=a;
+    target.fillStyle="#ffffff";
+    target.font="bold " + clamp(18, c.width/50, 26) + "px Courier New";
+
+    const txt = activeMsg.shown;
+    const maxW = w-40;
+    const words = txt.split(" ");
+    let line="", lines=[];
+    for(const word of words){
+      const test = line ? line+" "+word : word;
+      if(target.measureText(test).width>maxW){
+        lines.push(line);
+        line=word;
+      }else line=test;
+    }
+    if(line) lines.push(line);
+    lines = lines.slice(0,2);
+
+    for(let i=0;i<lines.length;i++){
+      const yy = y + 36 + i*28;
+      drawCenteredTextTo(target, lines[i], yy, target.font, "#ffffff", "rgba(0,0,0,0.55)", 4);
+    }
+    target.restore();
+  }
+
+  if(phase==="ending"){
+    const s = (performance.now()*0.001);
+    const floatY = Math.sin(s*1.6)*10;
+    const baseY = Math.round(c.height*0.58 + floatY);
+
+    drawCenteredTextTo(
+      target,
+      "İYİ Kİ SEN PELİN",
+      baseY,
+      "bold " + clamp(30, c.width/18, 54) + "px Courier New",
+      "#9fdcff",
+      "rgba(0,0,0,0.55)",
+      6
+    );
+    drawCenteredTextTo(
+      target,
+      "Kalbim sonsuza kadar senin.",
+      baseY + clamp(36, c.width/30, 46),
+      clamp(20, c.width/34, 34) + "px Courier New",
+      "#ffffff",
+      "rgba(0,0,0,0.45)",
+      4
+    );
+  }
+
+  if(flash>0.01){
+    target.fillStyle=`rgba(255,0,0,${0.18*Math.min(1,flash/35)})`;
+    target.fillRect(0,0,c.width,c.height);
+  }
+
+  const v = lerp(0.28, 0.46, bgHue);
+  drawVignetteTo(target, v);
+}
+</script>
+</body>
+</html>
