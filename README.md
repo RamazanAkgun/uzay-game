@@ -1,0 +1,2 @@
+# uzay-game
+ask-parkuru
